@@ -34,7 +34,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.mujtaba.nova.tools.ToolRegistry
+import com.mujtaba.nova.tools.ToolResult
 import com.mujtaba.nova.ui.theme.NovaTheme
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 
 data class ChatMsg(val from: String, val text: String)
@@ -46,8 +50,22 @@ class MainActivity : ComponentActivity() {
     private val messages = mutableStateListOf<ChatMsg>()
     private var status by mutableStateOf("Mic dabao aur bolo")
 
-    // Conversation context for Gemini: (role, text)
-    private val history = mutableListOf<Pair<String, String>>()
+    // Conversation context: full Gemini content objects
+    private val history = mutableListOf<JSONObject>()
+    private var lastToolMessage: String? = null
+    private var currentLang = "English"
+
+    private fun detectLang(t: String): String {
+        if (t.any { it in '\u0600'..'\u06FF' }) return "Urdu script"
+        val romanUrdu = setOf(
+            "kya", "hai", "hain", "kaun", "kitni", "kitna", "karo", "kro", "lagao",
+            "kholo", "mujhe", "batao", "aaj", "kal", "mera", "meri", "ka", "ki", "ko",
+            "mein", "nahi", "acha", "theek", "subah", "sham", "raat", "bhai", "kar",
+            "dena", "bhejo", "bolo", "suno", "kahan", "kab", "kyun", "kaise", "wala", "wali"
+        )
+        val words = t.lowercase().split(Regex("[^a-z]+"))
+        return if (words.any { it in romanUrdu }) "Roman Urdu" else "English"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -136,34 +154,126 @@ class MainActivity : ComponentActivity() {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nova")
     }
 
+    // ---------- history helpers (real Gemini format) ----------
+
+    private fun userTextContent(t: String): JSONObject =
+        JSONObject().put("role", "user")
+            .put("parts", JSONArray().put(JSONObject().put("text", t)))
+
+    private fun modelTextContent(t: String): JSONObject =
+        JSONObject().put("role", "model")
+            .put("parts", JSONArray().put(JSONObject().put("text", t)))
+
+    private fun modelPartContent(part: JSONObject): JSONObject =
+        JSONObject().put("role", "model").put("parts", JSONArray().put(part))
+
+    private fun toolResponseContent(name: String, result: String): JSONObject =
+        JSONObject().put("role", "user").put(
+            "parts",
+            JSONArray().put(
+                JSONObject().put(
+                    "functionResponse",
+                    JSONObject()
+                        .put("name", name)
+                        .put("response", JSONObject().put("result", result).put("reply_language", currentLang))
+                )
+            )
+        )
+
+    private fun isUserText(c: JSONObject): Boolean {
+        if (c.optString("role") != "user") return false
+        val parts = c.optJSONArray("parts") ?: return false
+        return parts.length() > 0 && parts.getJSONObject(0).has("text")
+    }
+
+    private fun trimHistory() {
+        while (history.size > 24) history.removeAt(0)
+        // history must always start with a normal user text turn
+        while (history.isNotEmpty() && !isUserText(history[0])) history.removeAt(0)
+    }
+
+    // ---------- agent loop ----------
+
     private fun askNova(userText: String) {
         messages.add(ChatMsg("Aap", userText))
-        history.add("user" to userText)
-        if (history.size > 20) {
-            repeat(history.size - 20) { history.removeAt(0) }
-        }
+        currentLang = detectLang(userText)
+        history.add(userTextContent("$userText\n[Reply language: $currentLang]"))
+        trimHistory()
+        lastToolMessage = null
         status = "Soch raha hun..."
+        callModel(0)
+    }
 
+    private fun callModel(depth: Int) {
         val snapshot = history.toList()
         Thread {
             val result = GeminiClient.ask(snapshot)
-            runOnUiThread {
-                result.onSuccess { reply ->
-                    history.add("model" to reply)
-                    messages.add(ChatMsg("Nova", reply))
+            runOnUiThread { handleReply(result, depth) }
+        }.start()
+    }
+
+    private fun handleReply(result: Result<AiReply>, depth: Int) {
+        result.onSuccess { reply ->
+            when (reply) {
+                is AiReply.Text -> {
+                    history.add(modelTextContent(reply.text))
+                    messages.add(ChatMsg("Nova", reply.text))
                     status = "Mic dabao aur bolo"
-                    speak(reply)
-                }.onFailure { e ->
-                    // remove the failed user turn so history stays valid
-                    if (history.isNotEmpty() && history.last().first == "user") {
-                        history.removeAt(history.size - 1)
+                    speak(reply.text)
+                }
+                is AiReply.ToolCall -> {
+                    val res = executeTool(reply)
+                    lastToolMessage = res.message
+                    history.add(modelPartContent(reply.rawPart))
+                    history.add(toolResponseContent(reply.name, res.message))
+                    if (depth < 2) {
+                        status = "Soch raha hun..."
+                        callModel(depth + 1)
+                    } else {
+                        messages.add(ChatMsg("Nova", res.message))
+                        history.add(modelTextContent(res.message))
+                        status = "Mic dabao aur bolo"
+                        speak(res.message)
                     }
-                    val msg = "Jawab nahi mil saka: ${e.message}"
-                    messages.add(ChatMsg("Nova", msg))
-                    status = "Error. Dobara koshish karo"
                 }
             }
-        }.start()
+        }.onFailure { e ->
+            val fallback = lastToolMessage
+            if (depth > 0 && fallback != null) {
+                // tool already ran, only the follow-up reply failed
+                history.add(modelTextContent(fallback))
+                messages.add(ChatMsg("Nova", fallback))
+                status = "Mic dabao aur bolo"
+                speak(fallback)
+            } else {
+                if (history.isNotEmpty() && isUserText(history.last())) {
+                    history.removeAt(history.size - 1)
+                }
+                messages.add(ChatMsg("Nova", "Jawab nahi mil saka: ${e.message}"))
+                status = "Error. Dobara koshish karo"
+            }
+        }
+    }
+
+    private fun executeTool(call: AiReply.ToolCall): ToolResult {
+        val tool = ToolRegistry.find(call.name)
+        val started = System.currentTimeMillis()
+        val res: ToolResult = if (tool == null) {
+            ToolResult(false, "Ye kaam abhi mujhe nahi aata.")
+        } else {
+            try {
+                tool.execute(this, call.args)
+            } catch (e: Exception) {
+                ToolResult(false, "Kaam fail hua: ${e.message}")
+            }
+        }
+        val ms = System.currentTimeMillis() - started
+
+        // Debug line: tool name, arguments, result, time
+        messages.add(
+            ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL"} (${ms}ms)")
+        )
+        return res
     }
 
     private val listener = object : RecognitionListener {
