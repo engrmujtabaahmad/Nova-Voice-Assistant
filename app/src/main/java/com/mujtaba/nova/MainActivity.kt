@@ -46,6 +46,9 @@ class MainActivity : ComponentActivity() {
     private val messages = mutableStateListOf<ChatMsg>()
     private var status by mutableStateOf("Mic dabao aur bolo")
 
+    // Conversation context for Gemini: (role, text)
+    private val history = mutableListOf<Pair<String, String>>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -117,6 +120,7 @@ class MainActivity : ComponentActivity() {
             status = "Recognizer ready nahi"
             return
         }
+        tts?.stop()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -127,7 +131,39 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun speak(text: String) {
+        val hasUrduScript = text.any { it in '\u0600'..'\u06FF' }
+        tts?.language = if (hasUrduScript) Locale.forLanguageTag("ur-PK") else Locale.US
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nova")
+    }
+
+    private fun askNova(userText: String) {
+        messages.add(ChatMsg("Aap", userText))
+        history.add("user" to userText)
+        if (history.size > 20) {
+            repeat(history.size - 20) { history.removeAt(0) }
+        }
+        status = "Soch raha hun..."
+
+        val snapshot = history.toList()
+        Thread {
+            val result = GeminiClient.ask(snapshot)
+            runOnUiThread {
+                result.onSuccess { reply ->
+                    history.add("model" to reply)
+                    messages.add(ChatMsg("Nova", reply))
+                    status = "Mic dabao aur bolo"
+                    speak(reply)
+                }.onFailure { e ->
+                    // remove the failed user turn so history stays valid
+                    if (history.isNotEmpty() && history.last().first == "user") {
+                        history.removeAt(history.size - 1)
+                    }
+                    val msg = "Jawab nahi mil saka: ${e.message}"
+                    messages.add(ChatMsg("Nova", msg))
+                    status = "Error. Dobara koshish karo"
+                }
+            }
+        }.start()
     }
 
     private val listener = object : RecognitionListener {
@@ -140,7 +176,7 @@ class MainActivity : ComponentActivity() {
         override fun onEvent(eventType: Int, params: Bundle?) {}
 
         override fun onError(error: Int) {
-            status = "Error code: $error"
+            status = "Speech error code: $error"
         }
 
         override fun onResults(results: Bundle?) {
@@ -151,11 +187,7 @@ class MainActivity : ComponentActivity() {
                 status = "Kuch samajh nahi aaya"
                 return
             }
-            messages.add(ChatMsg("Aap", text))
-            val reply = "Aapne kaha: $text"
-            messages.add(ChatMsg("Nova", reply))
-            status = "Mic dabao aur bolo"
-            speak(reply)
+            askNova(text)
         }
     }
 
