@@ -35,7 +35,9 @@ object ToolRegistry {
         ReadCalendarTool(),
         WebSearchTool(),
         ExchangeRateTool(),
-        WeatherTool()
+        WeatherTool(),
+        WhatsAppChatTool(),
+        DeviceInfoTool()
     )
 
     fun find(name: String): Tool? = tools.firstOrNull { it.name == name }
