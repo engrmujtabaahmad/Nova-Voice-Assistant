@@ -346,13 +346,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun runAndFinish(call: AiReply.ToolCall, tool: Tool, depth: Int) {
+        status = "Kaam kar raha hun..."
         val started = System.currentTimeMillis()
-        val res: ToolResult = try {
-            tool.execute(this, call.args)
-        } catch (e: Exception) {
-            ToolResult(false, "Kaam fail hua: ${e.message}")
-        }
-        finishTool(call, res, depth, System.currentTimeMillis() - started)
+        // Tools run on a background thread so internet calls are allowed
+        Thread {
+            val res: ToolResult = try {
+                tool.execute(this, call.args)
+            } catch (e: Exception) {
+                ToolResult(false, "Kaam fail hua: ${e.javaClass.simpleName} ${e.message ?: ""}")
+            }
+            val ms = System.currentTimeMillis() - started
+            runOnUiThread { finishTool(call, res, depth, ms) }
+        }.start()
     }
 
     private fun finishTool(call: AiReply.ToolCall, res: ToolResult, depth: Int, ms: Long = -1) {

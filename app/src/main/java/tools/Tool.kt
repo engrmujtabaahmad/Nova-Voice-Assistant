@@ -32,7 +32,10 @@ object ToolRegistry {
         CallContactTool(),
         SendSmsTool(),
         AddCalendarEventTool(),
-        ReadCalendarTool()
+        ReadCalendarTool(),
+        WebSearchTool(),
+        ExchangeRateTool(),
+        WeatherTool()
     )
 
     fun find(name: String): Tool? = tools.firstOrNull { it.name == name }

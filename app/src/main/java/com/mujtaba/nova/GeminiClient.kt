@@ -5,6 +5,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 sealed class AiReply {
     data class Text(val text: String) : AiReply()
@@ -28,11 +31,27 @@ object GeminiClient {
                 "Tool results may be written in Roman Urdu; ignore their language and answer in the user's language. " +
                 "Keep replies to 1-3 short sentences because they are spoken aloud. " +
                 "No markdown and no emojis. " +
-                "When the user asks for an action (open an app, battery status, set an alarm, call a contact, send an SMS), " +
+                "When the user asks for an action (open an app, battery status, set an alarm, call a contact, send an SMS, " +
+                "set a reminder, create or read calendar events, search the web), " +
                 "you MUST call the matching function. Never claim an action was done without calling it. " +
+                "If a function result says FAILED, tell the user honestly that it did not work and why. " +
                 "For calls and SMS the app itself shows a Confirm/Cancel popup, so never ask for confirmation in text; just call the function. " +
-                "After a function result, confirm briefly in the user's language. " +
-                "If you need live or current information that you do not have, say so honestly."
+                "For reminders and calendar entries call add_calendar_event; for questions like what do I have today or tomorrow call read_calendar. " +
+                "For a reminder with no clear time, ask the user for the time instead of guessing. " +
+                "For anything that changes over time (news, prices, exchange rates, weather, current office holders, recent events) " +
+                "you MUST call web_search instead of answering from memory, and you must mention the date from the result. " +
+                "If web_search fails, say you could not get current information; never guess. " +
+                "After a function result, confirm briefly in the user's language, mentioning the date and time when relevant."
+
+    // Built on every call so Nova always knows the real date and time
+    private fun systemPrompt(): String {
+        val now = ZonedDateTime.now()
+        val fmt = DateTimeFormatter.ofPattern("EEEE, yyyy-MM-dd HH:mm", Locale.ENGLISH)
+        return SYSTEM_PROMPT +
+                " Current local date and time: ${now.format(fmt)} (timezone ${now.zone}). " +
+                "Use it to work out words like today, tomorrow, next Monday. " +
+                "Dates use the format yyyy-MM-dd and date-times use yyyy-MM-ddTHH:mm in 24-hour local time."
+    }
 
     // Retries up to 2 times when Gemini says "503 high demand"
     fun ask(history: List<JSONObject>): Result<AiReply> {
@@ -64,7 +83,7 @@ object GeminiClient {
                     "system_instruction",
                     JSONObject().put(
                         "parts",
-                        JSONArray().put(JSONObject().put("text", SYSTEM_PROMPT))
+                        JSONArray().put(JSONObject().put("text", systemPrompt()))
                     )
                 )
                 .put("contents", contents)
