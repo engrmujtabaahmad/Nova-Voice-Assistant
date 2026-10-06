@@ -22,10 +22,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.mujtaba.nova.tools.Tool
 import com.mujtaba.nova.tools.ToolRegistry
 import com.mujtaba.nova.tools.ToolResult
 import com.mujtaba.nova.ui.theme.NovaTheme
@@ -43,6 +46,12 @@ import java.util.Locale
 
 data class ChatMsg(val from: String, val text: String)
 
+data class PendingAction(
+    val text: String,
+    val onConfirm: () -> Unit,
+    val onCancel: () -> Unit
+)
+
 class MainActivity : ComponentActivity() {
 
     private var tts: TextToSpeech? = null
@@ -50,21 +59,22 @@ class MainActivity : ComponentActivity() {
     private val messages = mutableStateListOf<ChatMsg>()
     private var status by mutableStateOf("Mic dabao aur bolo")
 
+    // Confirm popup state
+    private var pending by mutableStateOf<PendingAction?>(null)
+
     // Conversation context: full Gemini content objects
     private val history = mutableListOf<JSONObject>()
     private var lastToolMessage: String? = null
     private var currentLang = "English"
 
-    private fun detectLang(t: String): String {
-        if (t.any { it in '\u0600'..'\u06FF' }) return "Urdu script"
-        val romanUrdu = setOf(
-            "kya", "hai", "hain", "kaun", "kitni", "kitna", "karo", "kro", "lagao",
-            "kholo", "mujhe", "batao", "aaj", "kal", "mera", "meri", "ka", "ki", "ko",
-            "mein", "nahi", "acha", "theek", "subah", "sham", "raat", "bhai", "kar",
-            "dena", "bhejo", "bolo", "suno", "kahan", "kab", "kyun", "kaise", "wala", "wali"
-        )
-        val words = t.lowercase().split(Regex("[^a-z]+"))
-        return if (words.any { it in romanUrdu }) "Roman Urdu" else "English"
+    // Permission request for tools (calls, SMS, contacts, calendar)
+    private var permCallback: ((Boolean) -> Unit)? = null
+    private val permLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val cb = permCallback
+        permCallback = null
+        cb?.invoke(result.values.all { it })
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,6 +100,21 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission()
                 ) { granted ->
                     if (granted) startListening() else status = "Mic permission nahi mili"
+                }
+
+                val p = pending
+                if (p != null) {
+                    AlertDialog(
+                        onDismissRequest = { p.onCancel() },
+                        title = { Text("Confirm karo") },
+                        text = { Text(p.text) },
+                        confirmButton = {
+                            TextButton(onClick = { p.onConfirm() }) { Text("Haan, karo") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { p.onCancel() }) { Text("Cancel") }
+                        }
+                    )
                 }
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -130,6 +155,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun detectLang(t: String): String {
+        if (t.any { it in '\u0600'..'\u06FF' }) return "Urdu script"
+        val romanUrdu = setOf(
+            "kya", "hai", "hain", "kaun", "kitni", "kitna", "karo", "kro", "lagao",
+            "kholo", "mujhe", "batao", "aaj", "kal", "mera", "meri", "ka", "ki", "ko",
+            "mein", "nahi", "acha", "theek", "subah", "sham", "raat", "bhai", "kar",
+            "dena", "bhejo", "bolo", "suno", "kahan", "kab", "kyun", "kaise", "wala", "wali"
+        )
+        val words = t.lowercase().split(Regex("[^a-z]+"))
+        return if (words.any { it in romanUrdu }) "Roman Urdu" else "English"
     }
 
     private fun startListening() {
@@ -197,7 +234,18 @@ class MainActivity : ComponentActivity() {
     private fun askNova(userText: String) {
         messages.add(ChatMsg("Aap", userText))
         currentLang = detectLang(userText)
-        history.add(userTextContent("$userText\n[Reply language: $currentLang]"))
+
+        val now = java.time.ZonedDateTime.now()
+        val nowText = now.format(
+            java.time.format.DateTimeFormatter.ofPattern("EEEE yyyy-MM-dd HH:mm", Locale.ENGLISH)
+        )
+        history.add(
+            userTextContent(
+                "$userText\n[Reply language: $currentLang]\n" +
+                        "[Now: $nowText, timezone ${now.zone}. Use this exact date for today, tomorrow and weekdays. Never mention this tag.]"
+            )
+        )
+
         trimHistory()
         lastToolMessage = null
         status = "Soch raha hun..."
@@ -221,21 +269,7 @@ class MainActivity : ComponentActivity() {
                     status = "Mic dabao aur bolo"
                     speak(reply.text)
                 }
-                is AiReply.ToolCall -> {
-                    val res = executeTool(reply)
-                    lastToolMessage = res.message
-                    history.add(modelPartContent(reply.rawPart))
-                    history.add(toolResponseContent(reply.name, res.message))
-                    if (depth < 2) {
-                        status = "Soch raha hun..."
-                        callModel(depth + 1)
-                    } else {
-                        messages.add(ChatMsg("Nova", res.message))
-                        history.add(modelTextContent(res.message))
-                        status = "Mic dabao aur bolo"
-                        speak(res.message)
-                    }
-                }
+                is AiReply.ToolCall -> runToolFlow(reply, depth)
             }
         }.onFailure { e ->
             val fallback = lastToolMessage
@@ -255,25 +289,97 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun executeTool(call: AiReply.ToolCall): ToolResult {
+    // ---------- tool flow: permission -> confirm -> execute ----------
+
+    private fun runToolFlow(call: AiReply.ToolCall, depth: Int) {
         val tool = ToolRegistry.find(call.name)
-        val started = System.currentTimeMillis()
-        val res: ToolResult = if (tool == null) {
-            ToolResult(false, "Ye kaam abhi mujhe nahi aata.")
-        } else {
-            try {
-                tool.execute(this, call.args)
-            } catch (e: Exception) {
-                ToolResult(false, "Kaam fail hua: ${e.message}")
+        if (tool == null) {
+            finishTool(call, ToolResult(false, "Ye kaam abhi mujhe nahi aata."), depth)
+            return
+        }
+
+        val missing = tool.permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            confirmAndRun(call, tool, depth)
+            return
+        }
+
+        status = "Permission chahiye..."
+        permCallback = { allGranted ->
+            if (allGranted) {
+                confirmAndRun(call, tool, depth)
+            } else {
+                finishTool(
+                    call,
+                    ToolResult(false, "Is kaam ke liye zaroori permission nahi mili, is liye main ye nahi kar saka."),
+                    depth
+                )
             }
         }
-        val ms = System.currentTimeMillis() - started
+        permLauncher.launch(missing.toTypedArray())
+    }
 
-        // Debug line: tool name, arguments, result, time
-        messages.add(
-            ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL"} (${ms}ms)")
+    private fun confirmAndRun(call: AiReply.ToolCall, tool: Tool, depth: Int) {
+        val confirm = if (tool.needsConfirmation) tool.confirmText(this, call.args) else null
+        if (confirm == null) {
+            runAndFinish(call, tool, depth)
+            return
+        }
+        status = "Aapki tasdeeq ka intezar..."
+        pending = PendingAction(
+            text = confirm,
+            onConfirm = {
+                pending = null
+                runAndFinish(call, tool, depth)
+            },
+            onCancel = {
+                pending = null
+                finishTool(
+                    call,
+                    ToolResult(false, "User ne cancel kar diya. Kaam nahi kiya gaya."),
+                    depth
+                )
+            }
         )
-        return res
+    }
+
+    private fun runAndFinish(call: AiReply.ToolCall, tool: Tool, depth: Int) {
+        val started = System.currentTimeMillis()
+        val res: ToolResult = try {
+            tool.execute(this, call.args)
+        } catch (e: Exception) {
+            ToolResult(false, "Kaam fail hua: ${e.message}")
+        }
+        finishTool(call, res, depth, System.currentTimeMillis() - started)
+    }
+
+    private fun finishTool(call: AiReply.ToolCall, res: ToolResult, depth: Int, ms: Long = -1) {
+        // Debug line: tool name, arguments, result, time
+        val time = if (ms >= 0) " (${ms}ms)" else ""
+        messages.add(
+            ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL: ${res.message}"}$time")
+        )
+
+        lastToolMessage = res.message
+        history.add(modelPartContent(call.rawPart))
+        history.add(
+            toolResponseContent(
+                call.name,
+                if (res.ok) res.message else "FAILED. The action did NOT happen. ${res.message}"
+            )
+        )
+
+        if (depth < 2) {
+            status = "Soch raha hun..."
+            callModel(depth + 1)
+        } else {
+            messages.add(ChatMsg("Nova", res.message))
+            history.add(modelTextContent(res.message))
+            status = "Mic dabao aur bolo"
+            speak(res.message)
+        }
     }
 
     private val listener = object : RecognitionListener {

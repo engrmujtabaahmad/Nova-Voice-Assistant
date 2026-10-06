@@ -28,13 +28,28 @@ object GeminiClient {
                 "Tool results may be written in Roman Urdu; ignore their language and answer in the user's language. " +
                 "Keep replies to 1-3 short sentences because they are spoken aloud. " +
                 "No markdown and no emojis. " +
-                "When the user asks for an action (open an app, battery status, set an alarm), " +
+                "When the user asks for an action (open an app, battery status, set an alarm, call a contact, send an SMS), " +
                 "you MUST call the matching function. Never claim an action was done without calling it. " +
+                "For calls and SMS the app itself shows a Confirm/Cancel popup, so never ask for confirmation in text; just call the function. " +
                 "After a function result, confirm briefly in the user's language. " +
                 "If you need live or current information that you do not have, say so honestly."
 
-    // history: full Gemini "contents" objects (role + parts)
+    // Retries up to 2 times when Gemini says "503 high demand"
     fun ask(history: List<JSONObject>): Result<AiReply> {
+        var r = askOnce(history)
+        var tries = 0
+        while (r.isFailure && tries < 2 &&
+            r.exceptionOrNull()?.message?.startsWith("HTTP 503") == true
+        ) {
+            tries++
+            Thread.sleep(1500L * tries)
+            r = askOnce(history)
+        }
+        return r
+    }
+
+    // history: full Gemini "contents" objects (role + parts)
+    private fun askOnce(history: List<JSONObject>): Result<AiReply> {
         return try {
             val key = BuildConfig.GEMINI_API_KEY
             if (key.isBlank()) {
