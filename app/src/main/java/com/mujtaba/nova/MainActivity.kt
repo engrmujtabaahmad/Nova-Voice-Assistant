@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.mujtaba.nova.tools.NovaMemory.init(applicationContext)
 
         tts = TextToSpeech(this) { code ->
             if (code == TextToSpeech.SUCCESS) {

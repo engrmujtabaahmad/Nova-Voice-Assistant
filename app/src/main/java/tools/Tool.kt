@@ -37,7 +37,11 @@ object ToolRegistry {
         ExchangeRateTool(),
         WeatherTool(),
         WhatsAppChatTool(),
-        DeviceInfoTool()
+        DeviceInfoTool(),
+        WhatsAppCallTool(),
+        RememberTool(),
+        ListMemoryTool(),
+        ForgetMemoryTool()
     )
 
     fun find(name: String): Tool? = tools.firstOrNull { it.name == name }

@@ -1,5 +1,6 @@
 package com.mujtaba.nova
 
+import com.mujtaba.nova.tools.NovaMemory
 import com.mujtaba.nova.tools.ToolRegistry
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,23 +34,26 @@ object GeminiClient {
                 "No markdown and no emojis. " +
                 "When the user asks for an action (open an app, battery status, set an alarm, call a contact, send an SMS, " +
                 "set a reminder, create or read calendar events, search the web, open a WhatsApp chat, phone storage or Wi-Fi info), " +
-                "For WhatsApp you can only open the chat with a prepared message; the user must press Send. Never say a WhatsApp message was sent. " +
                 "you MUST call the matching function. Never claim an action was done without calling it. " +
                 "If a function result says FAILED, tell the user honestly that it did not work and why. " +
                 "For calls and SMS the app itself shows a Confirm/Cancel popup, so never ask for confirmation in text; just call the function. " +
+                "For WhatsApp you can only open the chat with a prepared message; the user must press Send. Never say a WhatsApp message was sent. " +
+                "For a WhatsApp call use whatsapp_call; it only opens the call screen and you cannot confirm the call connected. " +
+                "When the user asks you to remember something call remember_fact (never store passwords, card or ID numbers); " +
+                "to recall call list_memory; to forget call forget_memory. " +
                 "For reminders and calendar entries call add_calendar_event; for questions like what do I have today or tomorrow call read_calendar. " +
                 "For a reminder with no clear time, ask the user for the time instead of guessing. " +
                 "For anything that changes over time (news, prices, exchange rates, weather, current office holders, recent events) " +
-                "you MUST call web_search instead of answering from memory, and you must mention the date from the result. " +
+                "you MUST call a web tool instead of answering from memory (get_exchange_rate, get_weather or web_search), and you must mention the date from the result. " +
                 "Do NOT use web_search for timeless general knowledge (history, science, definitions, explanations, people from the past); answer those directly. " +
-                "If web_search fails, say you could not get current information; never guess. " +
+                "If a web tool fails, say you could not get current information; never guess. " +
                 "After a function result, confirm briefly in the user's language, mentioning the date and time when relevant."
 
-    // Built on every call so Nova always knows the real date and time
+    // Built on every call so Nova always knows the real date, time and saved memory
     private fun systemPrompt(): String {
         val now = ZonedDateTime.now()
         val fmt = DateTimeFormatter.ofPattern("EEEE, yyyy-MM-dd HH:mm", Locale.ENGLISH)
-        return SYSTEM_PROMPT +
+        return SYSTEM_PROMPT + NovaMemory.promptText() +
                 " Current local date and time: ${now.format(fmt)} (timezone ${now.zone}). " +
                 "Use it to work out words like today, tomorrow, next Monday. " +
                 "Dates use the format yyyy-MM-dd and date-times use yyyy-MM-ddTHH:mm in 24-hour local time."
