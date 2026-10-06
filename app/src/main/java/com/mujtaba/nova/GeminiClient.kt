@@ -40,6 +40,7 @@ object GeminiClient {
                 "For a reminder with no clear time, ask the user for the time instead of guessing. " +
                 "For anything that changes over time (news, prices, exchange rates, weather, current office holders, recent events) " +
                 "you MUST call web_search instead of answering from memory, and you must mention the date from the result. " +
+                "Do NOT use web_search for timeless general knowledge (history, science, definitions, explanations, people from the past); answer those directly. " +
                 "If web_search fails, say you could not get current information; never guess. " +
                 "After a function result, confirm briefly in the user's language, mentioning the date and time when relevant."
 

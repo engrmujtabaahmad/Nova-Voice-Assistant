@@ -157,6 +157,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Quick Settings tile opens the app with auto_listen = true
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (intent?.getBooleanExtra("auto_listen", false) == true) {
+            intent.removeExtra("auto_listen")
+            val ok = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (ok) {
+                window.decorView.postDelayed({ startListening() }, 700)
+            }
+        }
+    }
+
     private fun detectLang(t: String): String {
         if (t.any { it in '\u0600'..'\u06FF' }) return "Urdu script"
         val romanUrdu = setOf(
