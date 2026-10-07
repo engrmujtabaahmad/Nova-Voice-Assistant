@@ -23,6 +23,10 @@ object GeminiClient {
 
     private const val MODEL = "gemini-3.1-flash-lite"
 
+    // If the server rejects the thinking setting, we switch it off for the rest of the session
+    @Volatile
+    private var thinkingSupported = true
+
     private const val SYSTEM_PROMPT =
         "You are Nova, a personal voice assistant on an Android phone. " +
                 "ALWAYS reply in the same language and script as the user's latest message: " +
@@ -59,22 +63,31 @@ object GeminiClient {
                 "Dates use the format yyyy-MM-dd and date-times use yyyy-MM-ddTHH:mm in 24-hour local time."
     }
 
-    // Retries up to 2 times when Gemini says "503 high demand"
+    // Retries on 503 (high demand) and falls back if the thinking setting is rejected
     fun ask(history: List<JSONObject>): Result<AiReply> {
-        var r = askOnce(history)
+        var r = askOnce(history, thinkingSupported)
+
+        if (r.isFailure && thinkingSupported) {
+            val msg = r.exceptionOrNull()?.message ?: ""
+            if (msg.startsWith("HTTP 400") && msg.contains("think", ignoreCase = true)) {
+                thinkingSupported = false
+                r = askOnce(history, false)
+            }
+        }
+
         var tries = 0
         while (r.isFailure && tries < 2 &&
             r.exceptionOrNull()?.message?.startsWith("HTTP 503") == true
         ) {
             tries++
-            Thread.sleep(1500L * tries)
-            r = askOnce(history)
+            Thread.sleep(1000L * tries)
+            r = askOnce(history, thinkingSupported)
         }
         return r
     }
 
     // history: full Gemini "contents" objects (role + parts)
-    private fun askOnce(history: List<JSONObject>): Result<AiReply> {
+    private fun askOnce(history: List<JSONObject>, useThinkingConfig: Boolean): Result<AiReply> {
         return try {
             val key = BuildConfig.GEMINI_API_KEY
             if (key.isBlank()) {
@@ -99,6 +112,17 @@ object GeminiClient {
                         JSONObject().put("functionDeclarations", ToolRegistry.declarations())
                     )
                 )
+
+            if (useThinkingConfig) {
+                // Less internal "thinking" = much faster replies
+                body.put(
+                    "generationConfig",
+                    JSONObject().put(
+                        "thinkingConfig",
+                        JSONObject().put("thinkingLevel", "minimal")
+                    )
+                )
+            }
 
             val url = URL(
                 "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent"

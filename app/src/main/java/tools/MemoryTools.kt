@@ -14,6 +14,12 @@ object NovaMemory {
         }
     }
 
+    fun enabled(): Boolean = prefs?.getBoolean("enabled", true) ?: true
+
+    fun setEnabled(on: Boolean) {
+        prefs?.edit()?.putBoolean("enabled", on)?.apply()
+    }
+
     fun all(): List<String> {
         val a = JSONArray(prefs?.getString("items", "[]") ?: "[]")
         return List(a.length()) { a.getString(it) }
@@ -24,6 +30,7 @@ object NovaMemory {
     }
 
     fun add(fact: String): String? {
+        if (!enabled()) return "Memory band hai. Settings mein ON karo."
         val f = fact.trim()
         if (f.isEmpty()) return "Kya yaad rakhna hai, ye samajh nahi aaya."
         if (f.length > 200) return "Ye bohot lamba hai, chhota karke batao."
@@ -48,6 +55,7 @@ object NovaMemory {
     fun clear() = save(emptyList())
 
     fun promptText(): String {
+        if (!enabled()) return ""
         val items = all()
         if (items.isEmpty()) return ""
         return " Things the user asked you to remember: ${items.joinToString("; ")}. " +

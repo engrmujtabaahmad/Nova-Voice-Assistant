@@ -127,7 +127,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("Nova", style = MaterialTheme.typography.headlineMedium)
                         Text(status, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = {
+                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                        }) { Text("⚙ Settings") }
+                        Spacer(Modifier.height(4.dp))
 
                         LazyColumn(
                             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -201,6 +204,9 @@ class MainActivity : ComponentActivity() {
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
             )
+            // Stop waiting sooner after you finish speaking (the speech service may ignore this)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
         }
         r.startListening(intent)
     }
@@ -274,9 +280,16 @@ class MainActivity : ComponentActivity() {
 
     private fun callModel(depth: Int) {
         val snapshot = history.toList()
+        val t0 = System.currentTimeMillis()
         Thread {
             val result = GeminiClient.ask(snapshot)
-            runOnUiThread { handleReply(result, depth) }
+            val ms = System.currentTimeMillis() - t0
+            runOnUiThread {
+                if (NovaSettings.debug(this)) {
+                    messages.add(ChatMsg("⏱", "Gemini call: ${ms}ms"))
+                }
+                handleReply(result, depth)
+            }
         }.start()
     }
 
@@ -381,11 +394,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun finishTool(call: AiReply.ToolCall, res: ToolResult, depth: Int, ms: Long = -1) {
-        // Debug line: tool name, arguments, result, time
+        // Debug line: tool name, arguments, result, time (can be turned off in Settings)
         val time = if (ms >= 0) " (${ms}ms)" else ""
-        messages.add(
-            ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL: ${res.message}"}$time")
-        )
+        if (NovaSettings.debug(this)) {
+            messages.add(
+                ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL: ${res.message}"}$time")
+            )
+        }
 
         lastToolMessage = res.message
         history.add(modelPartContent(call.rawPart))
