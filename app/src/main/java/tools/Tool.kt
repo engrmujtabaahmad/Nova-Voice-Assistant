@@ -41,7 +41,8 @@ object ToolRegistry {
         WhatsAppCallTool(),
         RememberTool(),
         ListMemoryTool(),
-        ForgetMemoryTool()
+        ForgetMemoryTool(),
+        ReadNotificationsTool()
     )
 
     fun find(name: String): Tool? = tools.firstOrNull { it.name == name }

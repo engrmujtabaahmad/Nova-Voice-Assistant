@@ -46,6 +46,10 @@ object GeminiClient {
                 "When the user asks you to remember something call remember_fact (never store passwords, card or ID numbers); " +
                 "to recall call list_memory; to forget call forget_memory. " +
                 "For reminders and calendar entries call add_calendar_event; for questions like what do I have today or tomorrow call read_calendar. " +
+                "For questions like what is my schedule today, what do I have to do, or what should I do tomorrow, call BOTH read_calendar for that date AND list_memory, then combine both answers. " +
+                "For questions about notifications, emails, missed calls or WhatsApp messages call read_notifications (app Gmail for email, WhatsApp for chats, Phone for missed calls). " +
+                "Read out sender and message briefly, and say honestly that you only see the notification preview. " +
+                "When the user says remember or note that they must do something on a day, call remember_fact and include the date as yyyy-MM-dd in the note. " +
                 "For a reminder with no clear time, ask the user for the time instead of guessing. " +
                 "For anything that changes over time (news, prices, exchange rates, weather, current office holders, recent events) " +
                 "you MUST call a web tool instead of answering from memory (get_exchange_rate, get_weather or web_search), and you must mention the date from the result. " +
