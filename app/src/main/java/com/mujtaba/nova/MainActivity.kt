@@ -52,6 +52,8 @@ data class PendingAction(
     val onCancel: () -> Unit
 )
 
+private data class WaCommand(val name: String, val message: String)
+
 class MainActivity : ComponentActivity() {
 
     private var tts: TextToSpeech? = null
@@ -66,6 +68,9 @@ class MainActivity : ComponentActivity() {
     private val history = mutableListOf<JSONObject>()
     private var lastToolMessage: String? = null
     private var currentLang = "English"
+
+    // True while a "fast path" command (no Gemini) is running
+    private var fastMode = false
 
     // Permission request for tools (calls, SMS, contacts, calendar)
     private var permCallback: ((Boolean) -> Unit)? = null
@@ -255,9 +260,134 @@ class MainActivity : ComponentActivity() {
         while (history.isNotEmpty() && !isUserText(history[0])) history.removeAt(0)
     }
 
+    // ---------- fast path 1: "message <name> on WhatsApp ..." skips Gemini ----------
+
+    private fun parseWhatsAppSend(text: String): WaCommand? {
+        val t = text.trim().trimEnd('.', '!', '?')
+        if (!t.contains("whatsapp", ignoreCase = true)) return null
+
+        val opts = setOf(RegexOption.IGNORE_CASE)
+        val sep = "(?:saying|that|:|-|,)?"
+        val patterns = listOf(
+            // message Hamza on WhatsApp that I am coming
+            Regex("^(?:send\\s+(?:a\\s+)?)?(?:whatsapp\\s+)?(?:message|msg|text)\\s+(?:to\\s+)?(.+?)\\s+(?:on|via|in|through)\\s+whatsapp\\s*" + sep + "\\s*(.+)$", opts),
+            // send Hamza on WhatsApp: I am coming
+            Regex("^send\\s+(.+?)\\s+(?:on|via|in|through)\\s+whatsapp\\s*" + sep + "\\s*(.+)$", opts),
+            // whatsapp Hamza saying hello
+            Regex("^(?:send\\s+)?whatsapp\\s+(?:message\\s+)?(?:to\\s+)?(.+?)\\s*(?:saying|that|:|-|,)\\s*(.+)$", opts),
+            // Roman Urdu: Hamza ko whatsapp par message bhejo ke main aa raha hun
+            Regex("^(.+?)\\s+ko\\s+whatsapp\\s+(?:par|pe|per)\\s+(?:message|msg)?\\s*(?:bhejo|bhej\\s+do|karo|likho)?\\s*(?:ke|ki|keh|:|-|,)?\\s*(.+)$", opts)
+        )
+        for (p in patterns) {
+            val m = p.find(t) ?: continue
+            val name = m.groupValues[1].trim()
+            val msg = m.groupValues[2].trim()
+            if (name.isNotEmpty() && msg.isNotEmpty() && name.split(" ").size <= 4) {
+                return WaCommand(name, msg)
+            }
+        }
+        return null
+    }
+
+    private fun tryWhatsAppFast(userText: String): Boolean {
+        val cmd = parseWhatsAppSend(userText) ?: return false
+        if (ToolRegistry.find("open_whatsapp_chat") == null) return false
+
+        messages.add(ChatMsg("Aap", userText))
+        history.add(userTextContent(userText))
+        trimHistory()
+        lastToolMessage = null
+        fastMode = true
+        status = "Kaam kar raha hun..."
+
+        val call = AiReply.ToolCall(
+            "open_whatsapp_chat",
+            JSONObject().put("contact", cmd.name).put("message", cmd.message),
+            JSONObject()
+        )
+        runToolFlow(call, 2)
+        return true
+    }
+
+    // ---------- fast path 2: notification questions skip Gemini ----------
+
+    private fun fastNotificationApp(text: String): String? {
+        val s = text.lowercase()
+        val words = s.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return null
+
+        // Commands (send / call / open / remind...) never use the fast path
+        val commandStarts = setOf(
+            "message", "msg", "text", "send", "tell", "call", "open", "reply",
+            "remind", "set", "write", "draft", "bhej", "bhejo", "kholo", "likho"
+        )
+        if (words.first() in commandStarts) return null
+        if ("saying" in words || "bhejo" in words || "bhej" in words) return null
+
+        // Only real questions about received things use the fast path
+        val cues = setOf(
+            "aaya", "aya", "aayi", "ayi", "aaye", "aye", "came", "new", "unread",
+            "kis", "kiska", "kaun", "kon", "who", "koi", "any", "check", "dekh", "dekho",
+            "parh", "parho", "read", "received", "mila", "mili", "kitne", "many",
+            "which", "latest", "recent"
+        )
+        val hasCue = words.any { it in cues }
+
+        val wa = s.contains("whatsapp") || s.contains("واٹس")
+        val mail = s.contains("gmail") || s.contains("email") || s.contains("e-mail") ||
+                "mail" in words || "mails" in words
+        val missed = s.contains("missed call") || s.contains("miss call")
+        val notif = s.contains("notification") || s.contains("نوٹیفکیشن")
+
+        return when {
+            missed -> "Phone"
+            wa && hasCue -> "WhatsApp"
+            mail && hasCue -> "Gmail"
+            notif -> ""
+            else -> null
+        }
+    }
+
+    private fun tryFastPath(userText: String): Boolean {
+        val app = fastNotificationApp(userText) ?: return false
+        val tool = ToolRegistry.find("read_notifications") ?: return false
+
+        messages.add(ChatMsg("Aap", userText))
+        history.add(userTextContent(userText))
+        status = "Notifications dekh raha hun..."
+        val started = System.currentTimeMillis()
+        Thread {
+            val res: ToolResult = try {
+                tool.execute(this, JSONObject().put("app", app).put("limit", 5))
+            } catch (e: Exception) {
+                ToolResult(false, "Notifications nahi parh saka: ${e.message}")
+            }
+            val ms = System.currentTimeMillis() - started
+            runOnUiThread {
+                if (NovaSettings.debug(this)) {
+                    messages.add(
+                        ChatMsg(
+                            "⚙",
+                            "fast path read_notifications app=\"$app\" -> ${if (res.ok) "OK" else "FAIL"} (${ms}ms, no Gemini)"
+                        )
+                    )
+                }
+                history.add(modelTextContent(res.message))
+                messages.add(ChatMsg("Nova", res.message))
+                status = "Mic dabao aur bolo"
+                speak(res.message)
+            }
+        }.start()
+        return true
+    }
+
     // ---------- agent loop ----------
 
     private fun askNova(userText: String) {
+        if (tryWhatsAppFast(userText)) return
+        if (tryFastPath(userText)) return
+
+        fastMode = false
         messages.add(ChatMsg("Aap", userText))
         currentLang = detectLang(userText)
 
@@ -394,24 +524,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun finishTool(call: AiReply.ToolCall, res: ToolResult, depth: Int, ms: Long = -1) {
+        val fast = fastMode
+        fastMode = false
+
         // Debug line: tool name, arguments, result, time (can be turned off in Settings)
         val time = if (ms >= 0) " (${ms}ms)" else ""
         if (NovaSettings.debug(this)) {
+            val tag = if (fast) " [fast, no Gemini]" else ""
             messages.add(
-                ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL: ${res.message}"}$time")
+                ChatMsg("⚙", "${call.name} ${call.args} -> ${if (res.ok) "OK" else "FAIL: ${res.message}"}$time$tag")
             )
         }
 
         lastToolMessage = res.message
-        history.add(modelPartContent(call.rawPart))
-        history.add(
-            toolResponseContent(
-                call.name,
-                if (res.ok) res.message else "FAILED. The action did NOT happen. ${res.message}"
+        if (!fast) {
+            history.add(modelPartContent(call.rawPart))
+            history.add(
+                toolResponseContent(
+                    call.name,
+                    if (res.ok) res.message else "FAILED. The action did NOT happen. ${res.message}"
+                )
             )
-        )
+        }
 
-        if (depth < 2) {
+        val direct = fast || (res.ok && ToolRegistry.find(call.name)?.directReply == true)
+        if (depth < 2 && !direct) {
             status = "Soch raha hun..."
             callModel(depth + 1)
         } else {

@@ -17,6 +17,9 @@ interface Tool {
     // If true, the user must press Confirm before execute() runs
     val needsConfirmation: Boolean get() = false
 
+    // If true, the result is shown and spoken directly (no second Gemini call = faster)
+    val directReply: Boolean get() = false
+
     // Text for the confirm popup. Return null to skip the popup
     fun confirmText(context: Context, args: JSONObject): String? = null
 

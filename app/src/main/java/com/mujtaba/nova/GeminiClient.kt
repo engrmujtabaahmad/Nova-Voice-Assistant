@@ -41,14 +41,16 @@ object GeminiClient {
                 "you MUST call the matching function. Never claim an action was done without calling it. " +
                 "If a function result says FAILED, tell the user honestly that it did not work and why. " +
                 "For calls and SMS the app itself shows a Confirm/Cancel popup, so never ask for confirmation in text; just call the function. " +
+                "To SEND or WRITE a WhatsApp message to a person (for example 'message Hamza on WhatsApp that I am coming', 'send Ali a WhatsApp saying hello') " +
+                "call open_whatsapp_chat with contact and message. This is NOT a notification question and must never call read_notifications. " +
                 "For WhatsApp you can only open the chat with a prepared message; the user must press Send. Never say a WhatsApp message was sent. " +
                 "For a WhatsApp call use whatsapp_call; it only opens the call screen and you cannot confirm the call connected. " +
                 "When the user asks you to remember something call remember_fact (never store passwords, card or ID numbers); " +
                 "to recall call list_memory; to forget call forget_memory. " +
                 "For reminders and calendar entries call add_calendar_event; for questions like what do I have today or tomorrow call read_calendar. " +
-                "For questions like what is my schedule today, what do I have to do, or what should I do tomorrow, call BOTH read_calendar for that date AND list_memory, then combine both answers. " +
-                "For questions about notifications, emails, missed calls or WhatsApp messages call read_notifications (app Gmail for email, WhatsApp for chats, Phone for missed calls). " +
-                "Read out sender and message briefly, and say honestly that you only see the notification preview. " +
+                "For questions like what is my schedule today, what do I have to do, or what should I do tomorrow, call read_calendar ONCE for that date; the user's saved notes are already given to you above, so combine them without calling list_memory. " +
+                "ONLY when the user asks what messages, emails, missed calls or notifications they RECEIVED (for example 'who messaged me', 'any new WhatsApp messages', 'did I get an email') " +
+                "call read_notifications exactly ONCE (leave app empty to see everything, or use Gmail, WhatsApp, Phone for one app). " +
                 "When the user says remember or note that they must do something on a day, call remember_fact and include the date as yyyy-MM-dd in the note. " +
                 "For a reminder with no clear time, ask the user for the time instead of guessing. " +
                 "For anything that changes over time (news, prices, exchange rates, weather, current office holders, recent events) " +
@@ -67,7 +69,8 @@ object GeminiClient {
                 "Dates use the format yyyy-MM-dd and date-times use yyyy-MM-ddTHH:mm in 24-hour local time."
     }
 
-    // Retries on 503 (high demand) and falls back if the thinking setting is rejected
+    // 503: up to 2 retries. Timeout: 1 retry only (so you never wait too long).
+    // Also falls back if the thinking setting is rejected.
     fun ask(history: List<JSONObject>): Result<AiReply> {
         var r = askOnce(history, thinkingSupported)
 
@@ -80,11 +83,14 @@ object GeminiClient {
         }
 
         var tries = 0
-        while (r.isFailure && tries < 2 &&
-            r.exceptionOrNull()?.message?.startsWith("HTTP 503") == true
-        ) {
+        while (r.isFailure && tries < 2) {
+            val m = r.exceptionOrNull()?.message ?: ""
+            val is503 = m.startsWith("HTTP 503")
+            val isTimeout = m.contains("timed out", ignoreCase = true) ||
+                    m.contains("timeout", ignoreCase = true)
+            if (!(is503 || (isTimeout && tries == 0))) break
             tries++
-            Thread.sleep(1000L * tries)
+            Thread.sleep(800L * tries)
             r = askOnce(history, thinkingSupported)
         }
         return r
@@ -133,8 +139,8 @@ object GeminiClient {
             )
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
-                connectTimeout = 15000
-                readTimeout = 30000
+                connectTimeout = 10000
+                readTimeout = 25000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("x-goog-api-key", key)
